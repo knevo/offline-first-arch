@@ -1,98 +1,381 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
-
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { useSync } from '@/contexts/SyncContext';
+import type { Action } from '@/database/schema';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { actionService } from '@/services/ActionService';
+import * as ImagePicker from 'expo-image-picker';
+import { useNetworkState } from 'expo-network';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const colorScheme = useColorScheme();
+  const { isInternetReachable } = useNetworkState();
+  const { isSyncing, lastSyncTime, pendingMutations, pendingImages } =
+    useSync();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [actionsList, setActionsList] = useState<Action[]>([]);
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  // Load actions from database
+  const loadActions = useCallback(async () => {
+    try {
+      const actions = await actionService.getAllActions();
+      // Sort by created_at descending (newest first)
+      const sorted = actions.sort((a, b) => {
+        const dateA =
+          a.createdAt instanceof Date ? a.createdAt : new Date(a.createdAt);
+        const dateB =
+          b.createdAt instanceof Date ? b.createdAt : new Date(b.createdAt);
+        return dateB.getTime() - dateA.getTime();
+      });
+      setActionsList(sorted);
+    } catch (error) {
+      console.error('Error loading actions:', error);
+    }
+  }, []);
+
+  // Initial load
+  useEffect(() => {
+    loadActions();
+  }, [loadActions]);
+
+  // Refresh actions list periodically (simulating reactivity)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadActions();
+    }, 2000); // Refresh every 2 seconds
+
+    return () => clearInterval(interval);
+  }, [loadActions]);
+
+  const handleSmallRequest = async () => {
+    if (isProcessing) return;
+
+    setIsProcessing(true);
+    try {
+      await actionService.createSmallAction();
+      // Refresh the list immediately
+      await loadActions();
+    } catch (error) {
+      console.error('Error creating small action:', error);
+      Alert.alert('Error', 'Failed to create small action');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleLargeRequest = async () => {
+    if (isProcessing) return;
+
+    // Request camera permissions
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(
+        'Permission Required',
+        'Camera permission is required to take photos',
+      );
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      // Launch camera
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        await actionService.createLargeActionWithImage(result.assets[0].uri);
+        // Refresh the list immediately
+        await loadActions();
+      }
+    } catch (error) {
+      console.error('Error creating large action:', error);
+      Alert.alert('Error', 'Failed to create large action');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const formatTimestamp = (date: Date | number): string => {
+    const d = date instanceof Date ? date : new Date(date);
+    return d.toLocaleTimeString();
+  };
+
+  const isSynced = (action: Action): boolean => {
+    return !!action.syncedAt;
+  };
+
+  const getStatusColor = (action: Action): string => {
+    if (isSynced(action)) {
+      return colorScheme === 'dark' ? '#4CAF50' : '#2E7D32'; // Green
+    }
+    return colorScheme === 'dark' ? '#FFA726' : '#F57C00'; // Orange
+  };
+
+  const getStatusText = (action: Action): string => {
+    return isSynced(action) ? 'Synced' : 'Pending';
+  };
+
+  return (
+    <ThemedView style={styles.container}>
+      {/* Network Status Banner */}
+      <View
+        style={[
+          styles.statusBanner,
+          {
+            backgroundColor: isInternetReachable
+              ? colorScheme === 'dark'
+                ? '#1B5E20'
+                : '#C8E6C9'
+              : colorScheme === 'dark'
+              ? '#B71C1C'
+              : '#FFCDD2',
+          },
+        ]}
+      >
+        <Text
+          style={[
+            styles.statusText,
+            { color: isInternetReachable ? '#4CAF50' : '#F44336' },
+          ]}
+        >
+          {isInternetReachable ? '🟢 Online' : '🔴 Offline'}
+        </Text>
+        {isSyncing && (
+          <ActivityIndicator
+            size='small'
+            color='#4CAF50'
+            style={styles.syncIndicator}
+          />
+        )}
+        {lastSyncTime && (
+          <Text style={styles.lastSyncText}>
+            Last sync: {formatTimestamp(lastSyncTime)}
+          </Text>
+        )}
+      </View>
+
+      {/* Queue Status Card */}
+      <View
+        style={[
+          styles.queueCard,
+          {
+            backgroundColor: colorScheme === 'dark' ? '#1E1E1E' : '#F5F5F5',
+          },
+        ]}
+      >
+        <Text style={styles.queueTitle}>Queue Status</Text>
+        <View style={styles.queueRow}>
+          <Text style={styles.queueLabel}>Pending Mutations:</Text>
+          <Text style={styles.queueValue}>{pendingMutations}</Text>
+        </View>
+        <View style={styles.queueRow}>
+          <Text style={styles.queueLabel}>Pending Images:</Text>
+          <Text style={styles.queueValue}>{pendingImages}</Text>
+        </View>
+      </View>
+
+      {/* Action Buttons */}
+      <View style={styles.buttonContainer}>
+        <TouchableOpacity
+          style={[styles.button, styles.smallButton]}
+          onPress={handleSmallRequest}
+          disabled={isProcessing}
+        >
+          <Text style={styles.buttonText}>Small Request</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.button, styles.largeButton]}
+          onPress={handleLargeRequest}
+          disabled={isProcessing}
+        >
+          <Text style={styles.buttonText}>Large Request with Image</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Action Log */}
+      <View style={styles.logContainer}>
+        <Text style={styles.logTitle}>Action Log</Text>
+        <ScrollView style={styles.logScrollView}>
+          {actionsList.map((action) => (
+            <View
+              key={action.id}
+              style={[
+                styles.logItem,
+                {
+                  backgroundColor:
+                    colorScheme === 'dark' ? '#2C2C2C' : '#FFFFFF',
+                  borderLeftColor: getStatusColor(action),
+                },
+              ]}
+            >
+              <View style={styles.logItemHeader}>
+                <Text style={styles.logItemType}>
+                  {action.actionType.toUpperCase()}
+                </Text>
+                <View
+                  style={[
+                    styles.statusBadge,
+                    { backgroundColor: getStatusColor(action) },
+                  ]}
+                >
+                  <Text style={styles.statusBadgeText}>
+                    {getStatusText(action)}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.logItemTime}>
+                {formatTimestamp(action.createdAt)}
+              </Text>
+              {action.syncedAt && (
+                <Text style={styles.logItemSynced}>
+                  Synced: {formatTimestamp(action.syncedAt)}
+                </Text>
+              )}
+            </View>
+          ))}
+          {actionsList.length === 0 && (
+            <Text style={styles.emptyLog}>
+              No actions yet. Create one above!
+            </Text>
+          )}
+        </ScrollView>
+      </View>
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  container: {
+    flex: 1,
+    padding: 16,
+  },
+  statusBanner: {
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'space-between',
   },
-  stepContainer: {
-    gap: 8,
+  statusText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  syncIndicator: {
+    marginLeft: 8,
+  },
+  lastSyncText: {
+    fontSize: 12,
+    opacity: 0.7,
+  },
+  queueCard: {
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 16,
+  },
+  queueTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  queueRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     marginBottom: 8,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  queueLabel: {
+    fontSize: 14,
+    opacity: 0.7,
+  },
+  queueValue: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  button: {
+    flex: 1,
+    padding: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  smallButton: {
+    backgroundColor: '#2196F3',
+  },
+  largeButton: {
+    backgroundColor: '#FF9800',
+  },
+  buttonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  logContainer: {
+    flex: 1,
+  },
+  logTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  logScrollView: {
+    flex: 1,
+  },
+  logItem: {
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderLeftWidth: 4,
+  },
+  logItemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  logItemType: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statusBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  logItemTime: {
+    fontSize: 12,
+    opacity: 0.7,
+    marginBottom: 2,
+  },
+  logItemSynced: {
+    fontSize: 12,
+    opacity: 0.5,
+  },
+  emptyLog: {
+    textAlign: 'center',
+    padding: 32,
+    opacity: 0.5,
   },
 });

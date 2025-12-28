@@ -1,5 +1,12 @@
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
+export enum StatusEnum {
+  Pending = 'pending',
+  Processing = 'processing',
+  Completed = 'completed',
+  Failed = 'failed',
+}
+
 // Actions table
 export const actions = sqliteTable('actions', {
   id: text('id')

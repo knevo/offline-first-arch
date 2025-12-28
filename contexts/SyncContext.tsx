@@ -1,6 +1,6 @@
-import { deltaSyncService } from '@/services/sync/DeltaSyncService';
-import { imageUploadService } from '@/services/sync/ImageUploadService';
-import { mutationQueueService } from '@/services/sync/MutationQueueService';
+import { imageUploadService } from '@/services/imageUploadService';
+import { mutationQueueService } from '@/services/mutationQueueService';
+import { deltaSyncServer } from '@/services/syncService';
 import { useNetworkState } from 'expo-network';
 import React, {
   createContext,
@@ -54,7 +54,7 @@ export function SyncProvider({ children }: SyncProviderProps) {
     try {
       // 1. Delta sync (pull changes)
       console.log('[SyncContext] Starting delta sync...');
-      const deltaResult = await deltaSyncService.pullChanges();
+      const deltaResult = await deltaSyncServer();
       console.log(`[SyncContext] Delta sync: ${deltaResult.count} changes`);
 
       // 2. Process mutation queue (push changes - small requests first)
@@ -73,6 +73,14 @@ export function SyncProvider({ children }: SyncProviderProps) {
 
       setLastSyncTime(new Date());
       await updatePendingCounts();
+
+      // Check if there are still pending items after sync
+      const stillPending = await mutationQueueService.getPendingCount();
+      if (stillPending > 0) {
+        console.log(
+          `[SyncContext] ${stillPending} mutations still pending, will retry`,
+        );
+      }
     } catch (error) {
       console.error('[SyncContext] Sync error:', error);
     } finally {
@@ -85,34 +93,7 @@ export function SyncProvider({ children }: SyncProviderProps) {
     if (isInternetReachable && !isSyncing) {
       triggerSync();
     }
-  }, [isInternetReachable]);
-
-  // Periodic sync every 30 seconds when online
-  useEffect(() => {
-    if (!isInternetReachable) {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      if (!isSyncing) {
-        triggerSync();
-      }
-    }, 30000);
-
-    return () => {
-      clearInterval(interval);
-    };
   }, [isInternetReachable, isSyncing, triggerSync]);
-
-  // Update pending counts periodically
-  useEffect(() => {
-    updatePendingCounts();
-    const interval = setInterval(updatePendingCounts, 2000);
-
-    return () => {
-      clearInterval(interval);
-    };
-  }, [updatePendingCounts]);
 
   const value: SyncContextValue = {
     isSyncing,

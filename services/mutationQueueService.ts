@@ -1,13 +1,14 @@
 import axios from 'axios';
 import { asc, eq, inArray } from 'drizzle-orm';
 
+import { API_BASE_URL } from '@/constants/env';
 import { database } from '@/database';
-import { actions, mutations, type Mutation } from '@/database/schema';
-
-const API_BASE_URL = __DEV__
-  ? 'http://localhost:3000'
-  : 'http://localhost:3000';
-const MAX_RETRIES = 3;
+import {
+  actions,
+  mutations,
+  StatusEnum,
+  type Mutation,
+} from '@/database/schema';
 
 class MutationQueueService {
   private isProcessing = false;
@@ -18,42 +19,62 @@ class MutationQueueService {
     }
 
     this.isProcessing = true;
-    let processed = 0;
-    let failed = 0;
+    let totalProcessed = 0;
+    let totalFailed = 0;
 
     try {
-      // Get pending mutations in FIFO order
-      const pendingMutations = await database
-        .select()
-        .from(mutations)
-        .where(inArray(mutations.status, ['pending', 'retry']))
-        .orderBy(asc(mutations.createdAt));
+      // Keep processing until there are no more pending mutations
+      let hasMore = true;
+      while (hasMore) {
+        let processed = 0;
+        let failed = 0;
 
-      for (const mutation of pendingMutations) {
-        try {
-          const success = await this.processMutation(mutation);
+        // Get pending mutations in FIFO order
+        const pendingMutations = await database
+          .select()
+          .from(mutations)
+          .where(inArray(mutations.status, [StatusEnum.Pending]))
+          .orderBy(asc(mutations.createdAt));
 
-          if (success) {
-            processed++;
-          } else {
+        if (pendingMutations.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        for (const mutation of pendingMutations) {
+          try {
+            const success = await this.processMutation(mutation);
+
+            if (success) {
+              processed++;
+            } else {
+              failed++;
+            }
+
+            // Small delay between mutations to avoid overwhelming the server
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          } catch (error) {
+            console.error(
+              `[MutationQueue] Error processing mutation ${mutation.id}:`,
+              error,
+            );
             failed++;
           }
+        }
 
-          // Small delay between mutations to avoid overwhelming the server
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (error) {
-          console.error(
-            `[MutationQueue] Error processing mutation ${mutation.id}:`,
-            error,
-          );
-          failed++;
+        totalProcessed += processed;
+        totalFailed += failed;
+
+        // If no mutations were successfully processed, stop to avoid infinite loop
+        if (processed === 0) {
+          hasMore = false;
         }
       }
     } finally {
       this.isProcessing = false;
     }
 
-    return { processed, failed };
+    return { processed: totalProcessed, failed: totalFailed };
   }
 
   private async processMutation(mutation: Mutation): Promise<boolean> {
@@ -84,7 +105,7 @@ class MutationQueueService {
         await database
           .update(mutations)
           .set({
-            status: 'synced',
+            status: StatusEnum.Completed,
             processedAt: new Date(),
           })
           .where(eq(mutations.id, mutation.id));
@@ -93,6 +114,7 @@ class MutationQueueService {
         await database
           .update(actions)
           .set({
+            status: StatusEnum.Completed,
             syncedAt: new Date(response.data.action.syncedAt),
             serverId: response.data.action.id.toString(),
           })
@@ -108,25 +130,14 @@ class MutationQueueService {
       // Increment retry count
       const newRetryCount = mutation.retryCount + 1;
 
-      if (newRetryCount >= MAX_RETRIES) {
-        // Max retries reached, mark as failed
-        await database
-          .update(mutations)
-          .set({
-            status: 'failed',
-            processedAt: new Date(),
-          })
-          .where(eq(mutations.id, mutation.id));
-      } else {
-        // Retry later with exponential backoff
-        await database
-          .update(mutations)
-          .set({
-            status: 'retry',
-            retryCount: newRetryCount,
-          })
-          .where(eq(mutations.id, mutation.id));
-      }
+      // Retry later with exponential backoff
+      await database
+        .update(mutations)
+        .set({
+          status: StatusEnum.Pending,
+          retryCount: newRetryCount,
+        })
+        .where(eq(mutations.id, mutation.id));
 
       return false;
     }
@@ -136,7 +147,7 @@ class MutationQueueService {
     const pending = await database
       .select()
       .from(mutations)
-      .where(inArray(mutations.status, ['pending', 'retry']));
+      .where(inArray(mutations.status, [StatusEnum.Pending]));
     return pending.length;
   }
 }

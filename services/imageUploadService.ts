@@ -1,13 +1,9 @@
 import axios from 'axios';
 import { asc, eq } from 'drizzle-orm';
 
+import { API_BASE_URL } from '@/constants/env';
 import { database } from '@/database';
-import { imageUploads, type ImageUpload } from '@/database/schema';
-
-const API_BASE_URL = __DEV__
-  ? 'http://localhost:3000'
-  : 'http://localhost:3000';
-const MAX_RETRIES = 3;
+import { imageUploads, StatusEnum, type ImageUpload } from '@/database/schema';
 
 class ImageUploadService {
   private isProcessing = false;
@@ -30,7 +26,7 @@ class ImageUploadService {
       const pendingUploads = await database
         .select()
         .from(imageUploads)
-        .where(eq(imageUploads.uploadStatus, 'pending'))
+        .where(eq(imageUploads.uploadStatus, StatusEnum.Pending))
         .orderBy(asc(imageUploads.createdAt));
 
       for (const upload of pendingUploads) {
@@ -66,7 +62,7 @@ class ImageUploadService {
       // Update progress
       await database
         .update(imageUploads)
-        .set({ uploadProgress: 50 })
+        .set({ uploadProgress: 50, uploadStatus: StatusEnum.Processing })
         .where(eq(imageUploads.id, imageUpload.id));
 
       // Upload with axios
@@ -97,7 +93,7 @@ class ImageUploadService {
         await database
           .update(imageUploads)
           .set({
-            uploadStatus: 'completed',
+            uploadStatus: StatusEnum.Completed,
             uploadProgress: 100,
             serverUrl: response.data.url,
           })
@@ -120,28 +116,21 @@ class ImageUploadService {
     const newRetryCount = currentRetryCount + 1;
     this.retryCounts.set(imageUpload.id, newRetryCount);
 
-    if (newRetryCount >= MAX_RETRIES) {
-      await database
-        .update(imageUploads)
-        .set({ uploadStatus: 'failed' })
-        .where(eq(imageUploads.id, imageUpload.id));
-    } else {
-      // Keep as pending for retry
-      await database
-        .update(imageUploads)
-        .set({
-          uploadStatus: 'pending',
-          uploadProgress: 0,
-        })
-        .where(eq(imageUploads.id, imageUpload.id));
-    }
+    // Keep as waiting for retry
+    await database
+      .update(imageUploads)
+      .set({
+        uploadStatus: StatusEnum.Pending,
+        uploadProgress: 0,
+      })
+      .where(eq(imageUploads.id, imageUpload.id));
   }
 
   async getPendingCount(): Promise<number> {
     const pending = await database
       .select()
       .from(imageUploads)
-      .where(eq(imageUploads.uploadStatus, 'pending'));
+      .where(eq(imageUploads.uploadStatus, StatusEnum.Pending));
     return pending.length;
   }
 }

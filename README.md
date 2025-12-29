@@ -4,7 +4,9 @@ A React Native mobile application built with Expo that demonstrates an offline-f
 The base methodology here is local-first with a sync layer on top.
 Treat the local data as the API and the API as a backup.
 
-![App Screenshot](assets/images/ui-img.jpeg)
+<img src="assets/images/ui-img.jpeg" alt="App Screenshot" width="200" />
+<img src="assets/images/ui-img2.jpeg" alt="App Screenshot" width="200" />
+<img src="assets/images/ui-img3.jpeg" alt="App Screenshot" width="200" />
 
 ## How to Run
 

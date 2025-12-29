@@ -1,19 +1,27 @@
 import { Colors } from '@/constants/theme';
+import { Mutation, MutationTypeEnum } from '@/database/schema';
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 interface QueueStatusCardProps {
-  pendingMutations: number;
-  pendingImages: number;
+  pendingMutations: Mutation[];
   colorScheme: 'light' | 'dark';
 }
 
 export function QueueStatusCard({
   pendingMutations,
-  pendingImages,
   colorScheme,
 }: QueueStatusCardProps) {
   const colors = Colors[colorScheme];
+  const smallMutations = pendingMutations.filter(
+    (mutation) => mutation.type === MutationTypeEnum.CreatePkg,
+  );
+  const largeMutations = pendingMutations.filter(
+    (mutation) => mutation.type === MutationTypeEnum.UploadImage,
+  );
+
+  const smallMutationsCount = smallMutations.length;
+  const largeMutationsCount = largeMutations.length;
 
   return (
     <View
@@ -30,7 +38,7 @@ export function QueueStatusCard({
           Pending Mutations:
         </Text>
         <Text style={[styles.value, { color: colors.text }]}>
-          {pendingMutations}
+          {smallMutationsCount}
         </Text>
       </View>
       <View style={styles.row}>
@@ -38,7 +46,7 @@ export function QueueStatusCard({
           Pending Images:
         </Text>
         <Text style={[styles.value, { color: colors.text }]}>
-          {pendingImages}
+          {largeMutationsCount}
         </Text>
       </View>
     </View>

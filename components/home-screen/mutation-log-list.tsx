@@ -1,31 +1,34 @@
 import { Colors } from '@/constants/theme';
-import type { Action } from '@/database/schema';
+import type { Mutation } from '@/database/schema';
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ActionLogItem } from './action-log-item';
+import { MutationLogPreview } from './mutation-log-preview';
 
-interface ActionLogProps {
-  actions: Action[];
+interface MutationLogListProps {
+  mutations: Mutation[];
   colorScheme: 'light' | 'dark';
 }
 
-export function ActionLog({ actions, colorScheme }: ActionLogProps) {
+export function MutationLogList({
+  mutations,
+  colorScheme,
+}: MutationLogListProps) {
   const colors = Colors[colorScheme];
 
   return (
     <View style={styles.container}>
-      <Text style={[styles.title, { color: colors.text }]}>Action Log</Text>
+      <Text style={[styles.title, { color: colors.text }]}>Mutation Log</Text>
       <ScrollView style={styles.scrollView}>
-        {actions.map((action) => (
-          <ActionLogItem
-            key={action.id}
-            action={action}
+        {mutations.map((mutation) => (
+          <MutationLogPreview
+            key={mutation.id}
+            mutation={mutation}
             colorScheme={colorScheme}
           />
         ))}
-        {actions.length === 0 && (
+        {mutations.length === 0 && (
           <Text style={[styles.emptyLog, { color: colors.text }]}>
-            No actions yet. Create one above!
+            No mutations yet. Create a package above!
           </Text>
         )}
       </ScrollView>

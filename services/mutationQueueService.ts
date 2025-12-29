@@ -1,155 +1,214 @@
-import axios from 'axios';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
-import { API_BASE_URL } from '@/constants/env';
 import { database } from '@/database';
 import {
-  actions,
   mutations,
+  pkgs,
   StatusEnum,
+  syncMetadata,
   type Mutation,
 } from '@/database/schema';
+import { mockApiService } from './mockApiService';
 
-class MutationQueueService {
-  private isProcessing = false;
+export const getMaxRetries = async (
+  mutationType: string,
+): Promise<number | null> => {
+  try {
+    const key =
+      mutationType === 'upload_image'
+        ? 'image_upload_max_retries'
+        : 'json_upload_max_retries';
 
-  async processQueue(): Promise<{ processed: number; failed: number }> {
-    if (this.isProcessing) {
-      return { processed: 0, failed: 0 };
-    }
+    const record = await database
+      .select()
+      .from(syncMetadata)
+      .where(eq(syncMetadata.key, key))
+      .limit(1);
 
-    this.isProcessing = true;
-    let totalProcessed = 0;
-    let totalFailed = 0;
-
-    try {
-      // Keep processing until there are no more pending mutations
-      let hasMore = true;
-      while (hasMore) {
-        let processed = 0;
-        let failed = 0;
-
-        // Get pending mutations in FIFO order
-        const pendingMutations = await database
-          .select()
-          .from(mutations)
-          .where(inArray(mutations.status, [StatusEnum.Pending]))
-          .orderBy(asc(mutations.createdAt));
-
-        if (pendingMutations.length === 0) {
-          hasMore = false;
-          break;
-        }
-
-        for (const mutation of pendingMutations) {
-          try {
-            const success = await this.processMutation(mutation);
-
-            if (success) {
-              processed++;
-            } else {
-              failed++;
-            }
-
-            // Small delay between mutations to avoid overwhelming the server
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          } catch (error) {
-            console.error(
-              `[MutationQueue] Error processing mutation ${mutation.id}:`,
-              error,
-            );
-            failed++;
-          }
-        }
-
-        totalProcessed += processed;
-        totalFailed += failed;
-
-        // If no mutations were successfully processed, stop to avoid infinite loop
-        if (processed === 0) {
-          hasMore = false;
-        }
+    if (record.length > 0) {
+      const value = record[0].value;
+      if (value === undefined || value === null || value === 'infinite') {
+        return null; // null means infinite
       }
-    } finally {
-      this.isProcessing = false;
+      const maxRetries = parseInt(value, 10);
+      return isNaN(maxRetries) ? 3 : maxRetries; // Default to 3 if invalid
     }
 
-    return { processed: totalProcessed, failed: totalFailed };
+    // Default to 3 if not set
+    return 3;
+  } catch (error) {
+    console.error('[MutationQueue] Error getting max retries:', error);
+    return 3; // Default to 3 on error
   }
+};
 
-  private async processMutation(mutation: Mutation): Promise<boolean> {
-    try {
-      const payload = JSON.parse(mutation.payload);
-      let endpoint = '';
-      let requestData: any = {};
+/**
+ * Checks if an error is a network-related error
+ */
+const isNetworkError = (error: unknown): boolean => {
+  if (error instanceof Error) {
+    const errorMessage = error.message.toLowerCase();
+    return (
+      errorMessage.includes('network') ||
+      errorMessage.includes('offline') ||
+      errorMessage.includes('fetch') ||
+      errorMessage.includes('connection') ||
+      errorMessage.includes('timeout') ||
+      errorMessage.includes('enotfound') ||
+      errorMessage.includes('econnrefused')
+    );
+  }
+  return false;
+};
 
-      // Determine endpoint based on mutation type
-      if (mutation.mutationType === 'create_small_action') {
-        endpoint = '/api/actions/small';
-        requestData = { actionId: mutation.actionId, ...payload };
-      } else if (mutation.mutationType === 'create_large_action') {
-        endpoint = '/api/actions/large';
-        requestData = { actionId: mutation.actionId, ...payload };
-      } else {
-        throw new Error(`Unknown mutation type: ${mutation.mutationType}`);
-      }
+export const processMutation = async (
+  mutation: Mutation,
+  isInternetReachable?: boolean,
+): Promise<Mutation | null> => {
+  try {
+    const payload = JSON.parse(mutation.payload);
 
-      // Send to API
-      const response = await axios.post(
-        `${API_BASE_URL}${endpoint}`,
-        requestData,
+    // Route to appropriate handler based on mutation type
+    switch (mutation.type) {
+      case 'create_pkg':
+        return await processCreatePkg(mutation, payload);
+      case 'upload_image':
+        return await processUploadImage(mutation, payload);
+      default:
+        console.error(
+          `[MutationQueue] Unknown mutation type: ${mutation.type}`,
+        );
+        return null;
+    }
+  } catch (error) {
+    console.error(`[MutationQueue] Mutation ${mutation.id} failed:`, error);
+
+    // Check if this is a network error
+    const isNetworkErr = isNetworkError(error) || isInternetReachable === false;
+
+    if (isNetworkErr) {
+      // Network error: keep as pending without incrementing retry count
+      // Will be retried when network reconnects
+      console.log(
+        `[MutationQueue] Mutation ${mutation.id} failed due to network error. Will retry when network reconnects.`,
       );
-
-      if (response.data.success) {
-        // Mark mutation as synced
-        await database
-          .update(mutations)
-          .set({
-            status: StatusEnum.Completed,
-            processedAt: new Date(),
-          })
-          .where(eq(mutations.id, mutation.id));
-
-        // Update action's synced_at
-        await database
-          .update(actions)
-          .set({
-            status: StatusEnum.Completed,
-            syncedAt: new Date(response.data.action.syncedAt),
-            serverId: response.data.action.id.toString(),
-          })
-          .where(eq(actions.id, mutation.actionId));
-
-        return true;
-      } else {
-        throw new Error('API returned success: false');
-      }
-    } catch (error) {
-      console.error(`[MutationQueue] Mutation ${mutation.id} failed:`, error);
-
-      // Increment retry count
-      const newRetryCount = mutation.retryCount + 1;
-
-      // Retry later with exponential backoff
-      await database
+      const [updatedMutation] = await database
         .update(mutations)
         .set({
           status: StatusEnum.Pending,
+          // Don't increment retry count for network errors
+        })
+        .where(eq(mutations.id, mutation.id))
+        .returning();
+
+      return updatedMutation;
+    }
+
+    // Non-network error: proceed with normal retry logic
+    // Get max retries for this mutation type
+    const maxRetries = await getMaxRetries(mutation.type);
+    let updatedMutation: Mutation | null = null;
+    // Increment retry count
+    const newRetryCount = mutation.retryCount + 1;
+
+    // Check if we've exceeded max retries (unless infinite)
+    if (maxRetries !== null && newRetryCount > maxRetries) {
+      // Mark as failed - exceeded max retries
+      [updatedMutation] = await database
+        .update(mutations)
+        .set({
+          status: StatusEnum.Failed,
           retryCount: newRetryCount,
         })
-        .where(eq(mutations.id, mutation.id));
+        .where(eq(mutations.id, mutation.id))
+        .returning();
 
-      return false;
+      console.log(
+        `[MutationQueue] Mutation ${mutation.id} failed after ${newRetryCount} retries (max: ${maxRetries})`,
+      );
+      return updatedMutation;
     }
-  }
 
-  async getPendingCount(): Promise<number> {
-    const pending = await database
-      .select()
-      .from(mutations)
-      .where(inArray(mutations.status, [StatusEnum.Pending]));
-    return pending.length;
-  }
-}
+    // Retry later with exponential backoff
+    [updatedMutation] = await database
+      .update(mutations)
+      .set({
+        status: StatusEnum.Pending,
+        retryCount: newRetryCount,
+      })
+      .where(eq(mutations.id, mutation.id))
+      .returning();
 
-export const mutationQueueService = new MutationQueueService();
+    return updatedMutation;
+  }
+};
+
+const processCreatePkg = async (mutation: Mutation, payload: any) => {
+  try {
+    // Send to mock API
+    const response = await mockApiService.createPkg(payload.pkgId);
+    let updatedMutation: Mutation | null = null;
+    if (response.success) {
+      // Mark mutation as synced
+      [updatedMutation] = await database
+        .update(mutations)
+        .set({
+          status: StatusEnum.Completed,
+        })
+        .where(eq(mutations.id, mutation.id))
+        .returning();
+
+      // Update package's createdAt if returned
+      if (response.pkg?.createdAt) {
+        await database
+          .update(pkgs)
+          .set({
+            createdAt: new Date(response.pkg.createdAt),
+          })
+          .where(eq(pkgs.id, payload.pkgId));
+      }
+
+      return updatedMutation;
+    } else {
+      throw new Error(response.error || 'API returned success: false');
+    }
+  } catch (error) {
+    console.error(`[MutationQueue] Create pkg mutation failed:`, error);
+    throw error;
+  }
+};
+
+const processUploadImage = async (mutation: Mutation, payload: any) => {
+  try {
+    const { pkgId, imageUri } = payload;
+
+    // Use the mock API service
+    const response = await mockApiService.uploadImage(imageUri, pkgId);
+    let updatedMutation: Mutation | null = null;
+    if (response.success && response.url) {
+      // Mark mutation as completed
+      [updatedMutation] = await database
+        .update(mutations)
+        .set({
+          status: StatusEnum.Completed,
+        })
+        .where(eq(mutations.id, mutation.id))
+        .returning();
+
+      // Update package's imageUrl with server URL
+      await database
+        .update(pkgs)
+        .set({
+          imageUrl: response.url,
+        })
+        .where(eq(pkgs.id, pkgId));
+
+      return updatedMutation;
+    } else {
+      throw new Error(response.error || 'Image upload failed');
+    }
+  } catch (error) {
+    console.error(`[MutationQueue] Upload image mutation failed:`, error);
+    throw error;
+  }
+};

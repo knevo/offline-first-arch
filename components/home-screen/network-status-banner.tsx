@@ -27,7 +27,7 @@ export function NetworkStatusBanner({
           backgroundColor: isOnline
             ? colorScheme === 'dark'
               ? '#4CAF50'
-              : '#C8E6C9'
+              : '#66BB6A'
             : colorScheme === 'dark'
             ? '#F44336'
             : '#FFCDD2',

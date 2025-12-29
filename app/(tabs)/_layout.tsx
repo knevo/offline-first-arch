@@ -27,6 +27,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name='pkgs'
+        options={{
+          title: 'Packages',
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={28} name='square.stack.fill' color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name='settings'
         options={{
           title: 'Settings',

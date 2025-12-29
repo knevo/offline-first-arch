@@ -6,20 +6,20 @@ export enum StatusEnum {
   Completed = 'completed',
   Failed = 'failed',
 }
-
-// Actions table
-export const actions = sqliteTable('actions', {
+export enum MutationTypeEnum {
+  CreatePkg = 'create_pkg',
+  UploadImage = 'upload_image',
+}
+// Packages table
+export const pkgs = sqliteTable('pkgs', {
   id: text('id')
     .primaryKey()
     .notNull()
     .$defaultFn(() => generateId()),
-  actionType: text('action_type').notNull(),
-  status: text('status').notNull(),
+  imageUrl: text('image_url'),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
-  syncedAt: integer('synced_at', { mode: 'timestamp' }),
-  serverId: text('server_id'),
 });
 
 // Mutations table
@@ -28,28 +28,11 @@ export const mutations = sqliteTable('mutations', {
     .primaryKey()
     .notNull()
     .$defaultFn(() => generateId()),
-  actionId: text('action_id').notNull(),
-  mutationType: text('mutation_type').notNull(),
+  type: text('type').notNull().$type<MutationTypeEnum>(),
   payload: text('payload').notNull(),
-  status: text('status').notNull(),
+  pkgId: text('pkg_id'),
+  status: text('status').notNull().$type<StatusEnum>(),
   retryCount: integer('retry_count').notNull().default(0),
-  createdAt: integer('created_at', { mode: 'timestamp' })
-    .notNull()
-    .$defaultFn(() => new Date()),
-  processedAt: integer('processed_at', { mode: 'timestamp' }),
-});
-
-// Image uploads table
-export const imageUploads = sqliteTable('image_uploads', {
-  id: text('id')
-    .primaryKey()
-    .notNull()
-    .$defaultFn(() => generateId()),
-  actionId: text('action_id').notNull(),
-  localUri: text('local_uri').notNull(),
-  uploadStatus: text('upload_status').notNull(),
-  uploadProgress: integer('upload_progress').notNull().default(0),
-  serverUrl: text('server_url'),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -69,14 +52,11 @@ export const syncMetadata = sqliteTable('sync_metadata', {
 });
 
 // TypeScript types for inserts and selects
-export type Action = typeof actions.$inferSelect;
-export type NewAction = typeof actions.$inferInsert;
+export type Pkg = typeof pkgs.$inferSelect;
+export type NewPkg = typeof pkgs.$inferInsert;
 
 export type Mutation = typeof mutations.$inferSelect;
 export type NewMutation = typeof mutations.$inferInsert;
-
-export type ImageUpload = typeof imageUploads.$inferSelect;
-export type NewImageUpload = typeof imageUploads.$inferInsert;
 
 export type SyncMetadata = typeof syncMetadata.$inferSelect;
 export type NewSyncMetadata = typeof syncMetadata.$inferInsert;

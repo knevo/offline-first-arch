@@ -1,40 +1,41 @@
 import { Database } from './client';
-
+export const resetDatabase = async (db: Database) => {
+  await db.run(`
+    DROP TABLE IF EXISTS pkgs;
+    DROP TABLE IF EXISTS mutations;
+    DROP TABLE IF EXISTS sync_metadata;
+    DROP INDEX IF EXISTS idx_mutations_pkg_id;
+    DROP INDEX IF EXISTS idx_mutations_status;
+    DROP INDEX IF EXISTS idx_sync_metadata_key;
+  `);
+};
 export async function runMigrations(db: Database) {
   try {
-    // Create tables
+    // Check if we need to migrate from old schema
+    const needsMigration = await checkIfNeedsMigration(db);
+
+    if (needsMigration) {
+      console.log('🔄 Old schema detected, recreating tables...');
+      await resetDatabase(db);
+    }
+
+    // Create tables with new schema
     await db.run(`
-      CREATE TABLE IF NOT EXISTS actions (
+      CREATE TABLE IF NOT EXISTS pkgs (
         id TEXT PRIMARY KEY NOT NULL,
-        action_type TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        synced_at INTEGER,
-        server_id TEXT
+        image_url TEXT,
+        created_at INTEGER NOT NULL
       );
     `);
 
     await db.run(`
       CREATE TABLE IF NOT EXISTS mutations (
         id TEXT PRIMARY KEY NOT NULL,
-        action_id TEXT NOT NULL,
-        mutation_type TEXT NOT NULL,
+        type TEXT NOT NULL,
         payload TEXT NOT NULL,
+        pkg_id TEXT,
         status TEXT NOT NULL,
         retry_count INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        processed_at INTEGER
-      );
-    `);
-
-    await db.run(`
-      CREATE TABLE IF NOT EXISTS image_uploads (
-        id TEXT PRIMARY KEY NOT NULL,
-        action_id TEXT NOT NULL,
-        local_uri TEXT NOT NULL,
-        upload_status TEXT NOT NULL,
-        upload_progress INTEGER NOT NULL DEFAULT 0,
-        server_url TEXT,
         created_at INTEGER NOT NULL
       );
     `);
@@ -50,19 +51,11 @@ export async function runMigrations(db: Database) {
 
     // Create indexes for better query performance
     await db.run(`
-      CREATE INDEX IF NOT EXISTS idx_mutations_action_id ON mutations(action_id);
+      CREATE INDEX IF NOT EXISTS idx_mutations_pkg_id ON mutations(pkg_id);
     `);
 
     await db.run(`
       CREATE INDEX IF NOT EXISTS idx_mutations_status ON mutations(status);
-    `);
-
-    await db.run(`
-      CREATE INDEX IF NOT EXISTS idx_image_uploads_action_id ON image_uploads(action_id);
-    `);
-
-    await db.run(`
-      CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads(upload_status);
     `);
 
     await db.run(`
@@ -73,5 +66,18 @@ export async function runMigrations(db: Database) {
   } catch (error) {
     console.error('❌ Database migration failed:', error);
     throw error;
+  }
+}
+
+async function checkIfNeedsMigration(db: Database): Promise<boolean> {
+  try {
+    // Check if the mutations table has the old schema (mutation_type column)
+    const result = await db.$client.getAllAsync<{ name: string }>(
+      `SELECT name FROM pragma_table_info('mutations') WHERE name='mutation_type'`,
+    );
+    return result.length > 0;
+  } catch {
+    // If table doesn't exist or query fails, no migration needed
+    return false;
   }
 }

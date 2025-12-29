@@ -1,4 +1,4 @@
-import { Mutation, MutationTypeEnum } from '@/database';
+import { Mutation, MutationTypeEnum, StatusEnum } from '@/database';
 import { setIsSimulatedOffline } from '@/services/mockApiService';
 import { processMutation } from '@/services/mutationQueueService';
 import * as mutationService from '@/services/mutationService';
@@ -10,6 +10,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -20,6 +21,7 @@ interface MutationContextValue {
   allMutations: Mutation[];
   refreshMutations: () => Promise<void>;
   createMutation: (payload: CreateMutationPayload) => Promise<void>;
+  registerPackageRefreshCallback: (callback: () => Promise<void>) => void;
 }
 
 const MutationContext = createContext<MutationContextValue | undefined>(
@@ -36,6 +38,7 @@ export function MutationProvider({ children }: MutationProviderProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | undefined>(undefined);
   const [allMutations, setAllMutations] = useState<Mutation[]>([]);
+  const packageRefreshCallbackRef = useRef<(() => Promise<void>) | null>(null);
 
   const refreshMutations = useCallback(async () => {
     const mutations = await mutationService.getAllMutations();
@@ -45,6 +48,13 @@ export function MutationProvider({ children }: MutationProviderProps) {
     });
     setAllMutations(sorted);
   }, []);
+
+  const registerPackageRefreshCallback = useCallback(
+    (callback: () => Promise<void>) => {
+      packageRefreshCallbackRef.current = callback;
+    },
+    [],
+  );
 
   const processQueue = useCallback(async () => {
     if (isProcessing) {
@@ -99,6 +109,14 @@ export function MutationProvider({ children }: MutationProviderProps) {
                 ),
               );
               processed++;
+
+              // Refresh packages if mutation completed successfully
+              if (
+                updatedMutation.status === StatusEnum.Completed &&
+                packageRefreshCallbackRef.current
+              ) {
+                await packageRefreshCallbackRef.current();
+              }
             } else {
               failed++;
             }
@@ -149,15 +167,18 @@ export function MutationProvider({ children }: MutationProviderProps) {
 
     try {
       await deltaSyncServer();
+      // Refresh packages after sync pulls new data
+      if (packageRefreshCallbackRef.current) {
+        await packageRefreshCallbackRef.current();
+      }
       await processQueue();
       setLastSyncTime(new Date());
-      await refreshMutations();
     } catch (error) {
       console.error('[SyncContext] Sync error:', error);
     } finally {
       setIsSyncing(false);
     }
-  }, [isInternetReachable, isSyncing, processQueue, refreshMutations]);
+  }, [isInternetReachable, isSyncing, processQueue]);
 
   // Trigger sync when coming online
   useEffect(() => {
@@ -174,6 +195,7 @@ export function MutationProvider({ children }: MutationProviderProps) {
     allMutations,
     refreshMutations,
     createMutation,
+    registerPackageRefreshCallback,
   };
 
   return (

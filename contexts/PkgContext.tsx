@@ -54,6 +54,8 @@ export function PkgProvider({ children }: PackagesProviderProps) {
     });
   }, [createMutation, pkgs]);
 
+  const { registerPackageRefreshCallback } = useMutationContext();
+
   const updatePkg = useCallback(
     async (pkgId: string, imageUri: string) => {
       await pkgService.updatePkg(pkgId, imageUri);
@@ -74,6 +76,11 @@ export function PkgProvider({ children }: PackagesProviderProps) {
   useEffect(() => {
     refreshPackages();
   }, [refreshPackages]);
+
+  // Register callback for package refresh after sync/mutations
+  useEffect(() => {
+    registerPackageRefreshCallback(refreshPackages);
+  }, [registerPackageRefreshCallback, refreshPackages]);
 
   const value: PackagesContextValue = {
     pkgs,
